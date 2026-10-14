@@ -502,3 +502,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 [⭐ Star this repository](https://github.com/wasishah33/android-apk-builder) • [🐛 Report Bug](https://github.com/wasishah33/android-apk-builder/issues) • [💡 Request Feature](https://github.com/wasishah33/android-apk-builder/issues)
 
 </div>
+
+## My Invest Dashboard Preview
+
+This fork now contains a first-pass Android investment dashboard UI in `app/src/main/java/com/example/sampleapp/MainActivity.kt`.
+
+- Portfolio, investment overview, illustrative S&P 500 line chart, and navigation buttons.
+- **Preview only:** displayed amounts and rates are fictional sample figures.
+- Authentication, backend balances, deposits/withdrawals, admin controls, and live market data are not implemented yet.
+
+A push to `main` should start the Android Build workflow in the Actions tab. When the workflow completes successfully, download the `app-debug` artifact for installation testing. The release artifact is unsigned and is not suitable for public distribution without signing.
+

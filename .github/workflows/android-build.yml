@@ -1,62 +1,189 @@
-name: Android Build
+name: Aviator Predictor V29 Cloud Sync Android Build
 
 on:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+    branches:
+      - aviator-v29-cloud-build
+    paths:
+      - 'Aviator-Predictor-v29-CloudSync-Fix-source.zip'
+      - '.github/workflows/android-build.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  build-v29:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v4
+      - name: Check out build repository
+        uses: actions/checkout@v4
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
+      - name: Require the V29 source archive
+        shell: bash
+        run: |
+          ARCHIVE="Aviator-Predictor-v29-CloudSync-Fix-source.zip"
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "::error::Missing $ARCHIVE in the repository root. Upload the repackaged Version 29 Cloud Sync source ZIP to the aviator-v29-cloud-build branch."
+            exit 1
+          fi
 
-    - name: Cache Gradle packages
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools
 
-    - name: Build with Gradle
-      run: ./gradlew build
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-    - name: Build Debug APK
-      run: ./gradlew assembleDebug
+      - name: Install Gradle 8.9
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 https://services.gradle.org/distributions/gradle-8.9-bin.zip --output /tmp/gradle-8.9-bin.zip
+          unzip -q /tmp/gradle-8.9-bin.zip -d /tmp
+          echo "/tmp/gradle-8.9/bin" >> "$GITHUB_PATH"
 
-    - name: Build Release APK
-      run: ./gradlew assembleRelease
+      - name: Extract Version 29 source into isolated directory
+        shell: bash
+        run: |
+          mkdir -p aviator-v29-source
+          unzip -q "Aviator-Predictor-v29-CloudSync-Fix-source.zip" -d aviator-v29-source
+          test -f aviator-v29-source/build.gradle
+          test -f aviator-v29-source/AndroidManifest.xml
+          test -f aviator-v29-source/src/com/aviator/live/MainActivity.java
+          grep -q "versionCode 29" aviator-v29-source/build.gradle
 
-    - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
+      - name: Fix shortErr compiler parameter
+        shell: bash
+        run: |
+          FILE="aviator-v29-source/src/com/aviator/live/MainActivity.java"
+          grep -n "shortErr" "$FILE"
+          sed -i 's/shortErr(Exception/shortErr(Throwable/' "$FILE"
+          grep -q 'shortErr(Throwable' "$FILE" || { echo "::error::Could not apply shortErr type fix"; exit 1; }
 
-    - name: Upload Release APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-release
-        path: app/build/outputs/apk/release/app-release-unsigned.apk
+      - name: Combine OPEN, CRAWL URL and RECONNECT into CONNECT
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("aviator-v29-source/src/com/aviator/live/MainActivity.java")
+          s = p.read_text()
+          old_ui = 'LinearLayout sb=new LinearLayout(this); Button open=button("OPEN"); Button fetch=button("CRAWL URL"); Button reconnect=button("RECONNECT"); sb.addView(open,new LinearLayout.LayoutParams(0,dp(46),1)); sb.addView(fetch,new LinearLayout.LayoutParams(0,dp(46),1)); sb.addView(reconnect,new LinearLayout.LayoutParams(0,dp(46),1)); source.addView(sb);'
+          new_ui = 'LinearLayout sb=new LinearLayout(this); Button connect=button("CONNECT"); sb.addView(connect,new LinearLayout.LayoutParams(-1,dp(48))); source.addView(sb);'
+          old_listeners = '''open.setOnClickListener(new View.OnClickListener(){public void onClick(View v){openBrowser(endpoint.getText().toString().trim());}});
+                  fetch.setOnClickListener(new View.OnClickListener(){public void onClick(View v){fetchLive();}});
+                  reconnect.setOnClickListener(new View.OnClickListener(){public void onClick(View v){reconnectCapture();}});'''
+          new_listeners = '''connect.setOnClickListener(new View.OnClickListener(){public void onClick(View v){
+                      final String url=endpoint.getText().toString().trim();
+                      if(url.length()==0){status.setText("Enter the Aviator URL first");return;}
+                      if(!url.startsWith("https://")&&!url.startsWith("http://")){status.setText("URL must begin with https:// or http://");return;}
+                      openBrowser(url);
+                      startLive();
+                      if(!frameScanEnabled){frameScanEnabled=true;frameScanStatus.setText("Hybrid capture active • PixelCopy + WebView.draw + DOM");scheduleFrameCapture(150);}
+                      status.setText("CONNECT: opening Aviator, starting live crawl and capture, and syncing cloud data…");
+                      syncCloudQueue(); syncCloudLedger(); syncSharedCloudState(); requestCloudReestimate();
+                  }});'''
+          if old_ui not in s:
+              raise SystemExit("Expected v29 three-button UI was not found; refusing to build without patch.")
+          if old_listeners not in s:
+              raise SystemExit("Expected v29 three-button listeners were not found; refusing to build without patch.")
+          s = s.replace(old_ui, new_ui, 1).replace(old_listeners, new_listeners, 1)
+          if 'button("CRAWL URL")' in s or 'button("RECONNECT")' in s or 'button("OPEN")' in s:
+              raise SystemExit("Old buttons remain after patch.")
+          if 'button("CONNECT")' not in s:
+              raise SystemExit("Combined CONNECT button missing after patch.")
+          p.write_text(s)
+          print("Combined CONNECT button patch applied and verified.")
+          PY
 
-    - name: Upload Build Reports
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: build-reports
-        path: app/build/reports/
+      - name: Fix rolling history, prediction layout and cloud auth backoff
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("aviator-v29-source/src/com/aviator/live/MainActivity.java")
+          s = p.read_text()
+          def replace_once(old, new, label):
+              global s
+              if old not in s:
+                  raise SystemExit("Expected source pattern missing: " + label)
+              s = s.replace(old, new, 1)
+          if 'cloudAuthRetryAfterMs' not in s:
+              needle = 'cloudAccessToken="", cloudRefreshToken="";'
+              if needle not in s: raise SystemExit('Could not locate cloud token fields')
+              s = s.replace(needle, needle + '\n    volatile long cloudAuthRetryAfterMs=0;', 1)
+          replace_once('prediction=text("ESTIMATE BAND WAITING FOR HISTORY",12,Color.WHITE); prediction.setTypeface(null,1); prediction.setGravity(Gravity.CENTER); prediction.setSingleLine(true); prediction.setEllipsize(android.text.TextUtils.TruncateAt.END); result.addView(prediction,new LinearLayout.LayoutParams(-1,dp(34)));', 'prediction=text("PREDICTED ROUND: waiting for history\\\\nESTIMATED BAND: collecting rounds",12,Color.WHITE); prediction.setTypeface(null,1); prediction.setGravity(Gravity.CENTER); prediction.setSingleLine(false); prediction.setMaxLines(2); prediction.setEllipsize(android.text.TextUtils.TruncateAt.END); result.addView(prediction,new LinearLayout.LayoutParams(-1,dp(54)));', 'two-line prediction view')
+          replace_once('prediction.setText("ESTIMATE BAND NEEDS 5 COMPLETED ROUNDS");', 'prediction.setText("PREDICTED ROUND: waiting\\\\nESTIMATED BAND: need 5 completed rounds");', 'prediction waiting state')
+          replace_once('prediction.setText("UPDATING STATISTICAL ESTIMATE…");', 'prediction.setText("PREDICTED ROUND: updating…\\\\nESTIMATED BAND: recalculating");', 'prediction busy state')
+          replace_once('prediction.setText(String.format(Locale.US,"ESTIMATE %.2fx  •  BAND %.2fx–%.2fx",z.center,z.lo,z.hi));', 'prediction.setText(String.format(Locale.US,"PREDICTED ROUND %d: %.2fx\\\\nESTIMATED BAND: %.2fx – %.2fx",count+1,z.center,z.lo,z.hi));', 'prediction target and band labels')
+          start = s.find('        int overlap=0, added=0;')
+          if start < 0: raise SystemExit("Expected history overlap logic missing")
+          end_marker = '        lastHistoryRow=new ArrayList<Double>(current);'
+          end = s.find(end_marker, start)
+          if end < 0: raise SystemExit("Expected history baseline update missing")
+          end += len(end_marker)
+          history = '''        int overlap=0, added=0; boolean newestAtRight=false;
+                  // History can roll in either direction; compare the visible window against both ends.
+                  int maxOverlap=Math.min(current.size(),lastHistoryRow.size());
+                  for(int k=maxOverlap;k>=1;k--){boolean match=true;for(int j=0;j<k;j++)if(Math.abs(current.get(j)-lastHistoryRow.get(lastHistoryRow.size()-k+j))>0.000001){match=false;break;}if(match){overlap=k;added=current.size()-k;newestAtRight=true;break;}}
+                  for(int k=maxOverlap;k>=1;k--){boolean match=true;for(int j=0;j<k;j++)if(Math.abs(current.get(current.size()-k+j)-lastHistoryRow.get(j))>0.000001){match=false;break;}if(match&&k>overlap){overlap=k;added=current.size()-k;newestAtRight=false;break;}}
+                  if(added>0){ArrayList<Double> fresh=new ArrayList<Double>();if(newestAtRight){for(int i=overlap;i<current.size();i++)fresh.add(current.get(i));}else{for(int i=0;i<current.size()-overlap;i++)fresh.add(current.get(i));Collections.reverse(fresh);}synchronized(lock){for(double x:fresh){int targetIndex=rounds.size()+1;scorePredictionSnapshots(x,targetIndex,sourceKind);rounds.add(x);model.observe(x,rounds.size());newDataCount++;enqueueCloudObservation(x,raw,sourceKind,ocrConfidence);}while(rounds.size()>1000)rounds.remove(0);}lastCompletedRound=fresh.get(fresh.size()-1);lastFreshRoundMs=System.currentTimeMillis();historyDiagnostic="history row active • "+added+" new round(s) recorded • "+current.size()+" visible • "+rounds.size()+" total stored";saveRounds();requestCloudReestimate();}
+                  else historyDiagnostic="history row active • waiting for row change • "+current.size()+" values visible • "+rounds.size()+" total stored";
+                  lastHistoryRow=new ArrayList<Double>(current);'''
+          s = s[:start] + history + s[end:]
+          auth_old = '''    String createAnonymousSession()throws Exception{
+                  JSONObject body=new JSONObject();body.put("data",new JSONObject());
+                  HttpURLConnection c=postJson(SUPABASE_URL+"/auth/v1/signup",SUPABASE_ANON_KEY,body.toString());int code=c.getResponseCode();String response=read(code>=200&&code<400?c.getInputStream():c.getErrorStream());c.disconnect();
+                  if(code<200||code>=300)throw new IOException("anonymous auth HTTP "+code+": "+response.substring(0,Math.min(220,response.length())));
+                  JSONObject obj=new JSONObject(response);String access=obj.optString("access_token","");String refresh=obj.optString("refresh_token","");if(access.length()==0)throw new IOException("auth returned no access token; anonymous sign-in may be disabled");
+                  cloudAccessToken=access;cloudRefreshToken=refresh;prefs.edit().putString("cloud_access_token",access).putString("cloud_refresh_token",refresh).apply();return access;
+              }'''
+          auth_new = '''    boolean cloudAuthCoolingDown(){long now=System.currentTimeMillis();if(now<cloudAuthRetryAfterMs){cloudStatus="Cloud sync paused temporarily after an authentication/rate-limit response; local capture and predictions continue";return true;}return false;}
+              synchronized String createAnonymousSession()throws Exception{
+                  if(cloudAccessToken!=null&&cloudAccessToken.length()>0)return cloudAccessToken;
+                  if(cloudAuthCoolingDown())throw new IOException("cloud sign-in cooldown active; local capture continues");
+                  JSONObject body=new JSONObject();body.put("data",new JSONObject());
+                  HttpURLConnection c=postJson(SUPABASE_URL+"/auth/v1/signup",SUPABASE_ANON_KEY,body.toString());int code=c.getResponseCode();String response=read(code>=200&&code<400?c.getInputStream():c.getErrorStream());c.disconnect();
+                  if(code<200||code>=300){String lower=response.toLowerCase(Locale.US);if(code==429||lower.contains("rate limit")||lower.contains("requests limit reached"))cloudAuthRetryAfterMs=System.currentTimeMillis()+10*60*1000L;else if(lower.contains("sign up not allowed")||lower.contains("signup not allowed")||lower.contains("anonymous sign-ins are disabled"))cloudAuthRetryAfterMs=System.currentTimeMillis()+30*60*1000L;throw new IOException("cloud auth HTTP "+code+": "+response.substring(0,Math.min(180,response.length())));}
+                  JSONObject obj=new JSONObject(response);String access=obj.optString("access_token","");String refresh=obj.optString("refresh_token","");if(access.length()==0)throw new IOException("auth returned no access token; local capture continues");
+                  cloudAccessToken=access;cloudRefreshToken=refresh;cloudAuthRetryAfterMs=0;prefs.edit().putString("cloud_access_token",access).putString("cloud_refresh_token",refresh).apply();return access;
+              }'''
+          replace_once(auth_old, auth_new, 'anonymous auth rate-limit backoff')
+          replace_once('if(activityDestroyed||cloudSyncInFlight)return;', 'if(activityDestroyed||cloudSyncInFlight||cloudAuthCoolingDown())return;', 'cloud queue cooldown guard')
+          replace_once('if(activityDestroyed||prefs==null||cloudLedgerSyncInFlight)return;', 'if(activityDestroyed||prefs==null||cloudLedgerSyncInFlight||cloudAuthCoolingDown())return;', 'cloud ledger cooldown guard')
+          replace_once('if(activityDestroyed||prefs==null||cloudSharedReadInFlight)return;', 'if(activityDestroyed||prefs==null||cloudSharedReadInFlight||cloudAuthCoolingDown())return;', 'cloud shared-read cooldown guard')
+          replace_once('if(activityDestroyed||prefs==null||cloudReestimateInFlight)return;', 'if(activityDestroyed||prefs==null||cloudReestimateInFlight||cloudAuthCoolingDown())return;', 'cloud estimate cooldown guard')
+          p.write_text(s)
+          settings = Path("aviator-v29-source/settings.gradle")
+          st = settings.read_text()
+          st = '\n'.join("rootProject.name = 'AviatorPredictor-v29'" if line.strip().startswith('rootProject.name') else line for line in st.split('\n'))
+          settings.write_text(st)
+          build = Path("aviator-v29-source/build.gradle")
+          bg = build.read_text()
+          bg = '\n'.join('        versionCode 29' if line.strip().startswith('versionCode ') else line for line in bg.split('\n'))
+          bg = '\n'.join("        versionName '29.0-Welcome-Splash-CloudSync-Fix'" if line.strip().startswith('versionName ') else line for line in bg.split('\n'))
+          build.write_text(bg)
+          check = p.read_text()
+          for token in ['PREDICTED ROUND %d:', 'ESTIMATED BAND:', 'cloudAuthRetryAfterMs', 'waiting for row change']:
+              if token not in check: raise SystemExit('Post-patch verification failed: '+token)
+          print('Applied rolling-history, two-line prediction, auth backoff, and explicit v29 identity patches.')
+          PY
+
+      - name: Build debug APK
+        run: gradle --no-daemon --stacktrace -p aviator-v29-source assembleDebug
+
+      - name: Upload Version 29 debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aviator-Predictor-v29-CloudSync-debug
+          path: aviator-v29-source/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

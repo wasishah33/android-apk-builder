@@ -1,0 +1,73 @@
+name: Build signed Evercrest release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+      RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+      RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+      RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+      RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          test -n "$SUPABASE_URL" || { echo "Missing SUPABASE_URL"; exit 1; }
+          test -n "$SUPABASE_ANON_KEY" || { echo "Missing SUPABASE_ANON_KEY"; exit 1; }
+          test -n "$RELEASE_KEYSTORE_BASE64" || { echo "Missing RELEASE_KEYSTORE_BASE64"; exit 1; }
+          test -n "$RELEASE_STORE_PASSWORD" || { echo "Missing RELEASE_STORE_PASSWORD"; exit 1; }
+          test -n "$RELEASE_KEY_ALIAS" || { echo "Missing RELEASE_KEY_ALIAS"; exit 1; }
+          test -n "$RELEASE_KEY_PASSWORD" || { echo "Missing RELEASE_KEY_PASSWORD"; exit 1; }
+      - name: Prepare signing key
+        shell: bash
+        run: |
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/evercrest-release-key.jks"
+          chmod 600 "$RUNNER_TEMP/evercrest-release-key.jks"
+          test -s "$RUNNER_TEMP/evercrest-release-key.jks"
+      - name: Install Gradle 8.0
+        run: |
+          curl --fail --location --retry 3 https://services.gradle.org/distributions/gradle-8.0-bin.zip --output /tmp/gradle-8.0-bin.zip
+          unzip -q /tmp/gradle-8.0-bin.zip -d /tmp
+          echo "/tmp/gradle-8.0/bin" >> "$GITHUB_PATH"
+      - name: Build production-signed APK
+        run: |
+          gradle assembleRelease \
+            -PSUPABASE_URL="$SUPABASE_URL" \
+            -PSUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/evercrest-release-key.jks" \
+            -PRELEASE_STORE_PASSWORD="$RELEASE_STORE_PASSWORD" \
+            -PRELEASE_KEY_ALIAS="$RELEASE_KEY_ALIAS" \
+            -PRELEASE_KEY_PASSWORD="$RELEASE_KEY_PASSWORD"
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/Evercrest-Capital-Investments.apk"
+          sha256sum "$RUNNER_TEMP/Evercrest-Capital-Investments.apk" | tee "$RUNNER_TEMP/SHA256SUMS.txt"
+      - name: Upload signed APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Evercrest-Capital-Investments
+          path: |
+            ${{ runner.temp }}/Evercrest-Capital-Investments.apk
+            ${{ runner.temp }}/SHA256SUMS.txt
+      - name: Publish signed customer release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v1.0.1' }}
+          files: |
+            ${{ runner.temp }}/Evercrest-Capital-Investments.apk
+            ${{ runner.temp }}/SHA256SUMS.txt
+          generate_release_notes: true

@@ -4,6 +4,7 @@ plugins {
 }
 
 android {
+    buildFeatures { buildConfig true }
     namespace 'com.example.sampleapp'
     compileSdk 34
 
@@ -11,27 +12,38 @@ android {
         applicationId "com.example.sampleapp"
         minSdk 21
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
-
+        versionCode 2
+        versionName "1.0.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField "String", "SUPABASE_URL", "\"${project.findProperty('SUPABASE_URL') ?: ''}\""
+        buildConfigField "String", "SUPABASE_ANON_KEY", "\"${project.findProperty('SUPABASE_ANON_KEY') ?: ''}\""
+    }
+
+    signingConfigs {
+        release {
+            // Production releases must use a persistent private key supplied by CI secrets.
+            // Never commit the keystore or its passwords to the repository.
+            storeFile file(project.findProperty('RELEASE_STORE_FILE') ?: 'missing-release-key.jks')
+            storePassword project.findProperty('RELEASE_STORE_PASSWORD') ?: ''
+            keyAlias project.findProperty('RELEASE_KEY_ALIAS') ?: ''
+            keyPassword project.findProperty('RELEASE_KEY_PASSWORD') ?: ''
+        }
     }
 
     buildTypes {
         release {
+            // Do not silently debug-sign a production release.
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-    
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    
-    kotlinOptions {
-        jvmTarget = '1.8'
-    }
+    kotlinOptions { jvmTarget = '1.8' }
 }
 
 dependencies {
